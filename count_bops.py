@@ -116,7 +116,7 @@ class BOPsCounterVGG(FilterPruner):
         return x, cur_bops    
 
 class BOPsCounterMBNetV2(FilterPruner):
-    def forward(self, x, sparse_channel, bit_w, bit_a):
+    def forward(self, x, sparse_channel, bit):
         if isinstance(self.model, nn.DataParallel):
             model = self.model.module
         else:
@@ -173,7 +173,7 @@ class BOPsCounterMBNetV2(FilterPruner):
                     # self.conv_in_channels[self.activation_index] = m2.weight.size(1)
                     # self.conv_out_channels[self.activation_index] = m2.weight.size(0)
                     # self.cur_flops +=  h * w * m2.weight.size(0) * m2.weight.size(1) * m2.weight.size(2) * m2.weight.size(3)
-                    self.cur_bops +=  h * w * self.conv_in_channels * self.conv_out_channels * m2.weight.size(2) * m2.weight.size(3) * bit_w[self.activation_index] * bit_a[self.activation_index]
+                    self.cur_bops +=  h * w * self.conv_in_channels * self.conv_out_channels * m2.weight.size(2) * m2.weight.size(3) * bit[self.activation_index] * bit[self.activation_index]
 
                     # If this is full group_conv it should be bounded with last conv
                     if m2.groups == m2.out_channels and m2.groups == m2.in_channels:
@@ -208,7 +208,8 @@ class BOPsCounterMBNetV2(FilterPruner):
                 # self.base_flops = np.prod(m.weight.shape)
                 # self.cur_flops += self.base_flops
         cur_bops = self.cur_bops
-        return model.classifier(x.view(x.size(0), -1)),cur_bops
+        return model.classifier(x.view(x.size(0), -1)),cur_bops 
+    
 if __name__ == "__main__":
     device = 'cuda:{}'.format('0') if torch.cuda.is_available() else 'cpu'
     sparse_channel = [64, 64, 13, 128, 256, 26, 256, 512, 52, 512, 512, 52, 52]

@@ -16,6 +16,7 @@ from model.resnet_cifar import *
 from pruner.fp_resnet import FilterPrunerResNet
 from model.vgg_cifar import *
 from pruner.fp_vgg import FilterPrunerVGG
+from assign_bit import BitwidthAllocatorResNet
 
 import os
 import sys
@@ -42,25 +43,25 @@ from model.resnet_cifar_qt2 import qresnet_56_A_W
 from model.resnet_cifar_qt1 import qresnet_56_A
 
 
-os.environ['CUDA_VISIBLE_DEVICES']='0'
+os.environ['CUDA_VISIBLE_DEVICES']='2'
 # Hyper-Parameters
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--arch', type=str, default='resnet_56', choices=('resnet_56'), help='The architecture to prune and the resulting model and logs will use this') ##'vgg_16_bn'
-    parser.add_argument('--resume', type=str, default='./ckpt//resnet_56_CIFAR10.t7',help='load the model from the specified checkpoint')
-    parser.add_argument("--datapath", type=str, default='./data', help='Path toward the dataset that is used for this experiment')
+    parser.add_argument('--resume', type=str, default='./model/ckpt/resnet_56_CIFAR10_94.03.t7',help='load the model from the specified checkpoint')
+    parser.add_argument("--datapath", type=str, default='/data/cyk/dataset/', help='Path toward the dataset that is used for this experiment')
     parser.add_argument("--dataset", type=str, default='torchvision.datasets.CIFAR10', help='The class name of the dataset that is used, please find available classes under the dataset folder')
     parser.add_argument("--pruner", type=str, default='FilterPrunerResNet',choices=('FilterPrunerResNet','FilterPrunerVGG'),help='Different network require differnt pruner implementation')
     parser.add_argument("--rankPath", type=str, default='./rank_conv/CIFAR10/resnet_56', help='The path of ranks of convolution layers')
     parser.add_argument("--rank_type", type=str, default='Rank',choices=('l1_bn','l2_bn','l1_weight','l2_weight', 'Rank'), help='The ranking criteria for filter pruning')
-    parser.add_argument("--lub", type=str, default='./log_30/resnet_56_ea_min.data', help='The affine transformations')
+    parser.add_argument("--lub", type=str, default='./log_55/resnet_56_CIFAR10_ea_min.data', help='The affine transformations')
     parser.add_argument("--savename", type=str, default='resnet_56_CIFAR10')
-    parser.add_argument("--ori_channel", type=str, default='[16]*19 + [32]*18 + [64]*18', help='The original_channel of different network')
+    # parser.add_argument("--ori_channel", type=str, default='[16]*19 + [32]*18 + [64]*18', help='The original_channel of different network')
     parser.add_argument("--global_random_rank", action='store_true', default=False, help='When this is specified, none of the rank_type matters, it will randomly prune the filters')  
     parser.add_argument("--long_ft", type=int, default=400, help='It specifies how many epochs to fine-tune the network once the pruning is done')
-    parser.add_argument("--prune_away",type=float, default=30, help='How many percentage of constraints should be pruned away. E.g., 50 means 50% of FLOPs will be pruned away')
-    parser.add_argument("--penalty_factor",type=float, default=6, help=' a constant about quantization bid-width that can be adjusted according to the need')
-    parser.add_argument("--qbw_upper",type=str, default='[32] + [8]*18 + [6]*18 + [4]*18', help='The upper bound of quantization bid-width for different network')
+    parser.add_argument("--prune_away",type=float, default=55, help='How many percentage of constraints should be pruned away. E.g., 50 means 50% of FLOPs will be pruned away')
+    parser.add_argument("--penalty_factor",type=float, default=1/6, help=' a constant about quantization bid-width that can be adjusted according to the need')
+    parser.add_argument("--qbw_upper",type=int, default=[32] + [8]*18 + [6]*18 + [4]*18, help='The upper bound of quantization bid-width for different network')
     parser.add_argument("--safeguard", type=float, default=0.1,help='A floating point number that represent at least how many percentage of the original number of channel should be preserved. E.g., 0.10 means no matter what ranking, each layer should have at least 10% of the number of original channels.')
     parser.add_argument("--batch_size", type=int, default=128, choices=(16, 32, 64, 128), help='Batch size for training.')
     parser.add_argument("--tau_hat", type=int, default=200, help='The number of updates before evaluating for fitness (used in EA).   e.g. tau_hat = 200')
@@ -219,7 +220,7 @@ class PICPQ:
         total_t = time.time() - start_t
         print('Finished. Use {:.2f} hours. Minimum Loss: {:.3f}'.format(float(total_t) / 3600, minimum_loss))
         if not os.path.exists('./log_{}'.format(args.prune_away)):
-            os.makedirs('./log''./log_{}'.format(args.prune_away))
+            os.makedirs('./log_{}'.format(args.prune_away))
         np.savetxt(os.path.join('./log_{}'.format(args.prune_away), '{}_ea_loss.txt'.format(args.savename)), np.array(mean_loss))
         np.savetxt(os.path.join('./log_{}'.format(args.prune_away), '{}_ea_min.data'.format(args.savename)), best_perturbation)
 
@@ -262,30 +263,6 @@ class PICPQ:
         # self.pruner.pruning_with_transformations(self.pruner.filter_ranks, perturbation, target)
         sparse_channel = self.pruner.pruning_with_transformations(self.pruner.filter_ranks, perturbation, target)
 
-        bit = []
-        original_channel = args.ori_channel
-        for i in range(len(sparse_channel)):
-            s = sparse_channel[i] / original_channel[i]
-
-            if s == 1:
-                s = 0
-            else:
-                s = 1 / s
-
-            if args.arch == 'resnet_56':
-                upper = args.qbw_upper
-                wbit = upper[i] - math.ceil(s/args.penalty_factor)
-                bit.append(wbit)
-
-            elif args.arch == 'vgg_16_bn':
-                upper = args.qbw_upper
-                wbit = upper[i] - math.ceil(s/args.penalty_factor)
-                bit.append(wbit)
-                if i == 1 or i == 3 or i == 6 or i == 9:
-                    bit.append('M')
-                elif  i == 12:
-                    bit.append(32)
-        print(bit)
 
         self.pruner.reset()
         self.model.eval()
@@ -310,6 +287,22 @@ class PICPQ:
         acc = test(self.model, self.test_loader, device=self.device)
         # before fune-tuning
         b4ft_test_acc.append(acc)
+
+        ori_model = resnet_56()
+        ori_model.load_state_dict(torch.load(args.resume))
+        ori_model.to(device)
+        slim_model = torch.load('./ckpt_{}/'.format(args.prune_away) + '{}_init.t7'.format(args.savename)).to(device)
+        ori_statistics = BitwidthAllocatorResNet(ori_model)
+        slim_statistics = BitwidthAllocatorResNet(slim_model)
+        _, ori_magnitude_statistics = ori_statistics.forward(torch.zeros((1,3,32, 32), device = device))
+        _, slim_magnitude_statistics = slim_statistics.forward(torch.zeros((1,3,32, 32), device = device))
+        bit = []
+        for i in range(len(sparse_channel)):
+            layer_sparsity = slim_magnitude_statistics[i]/ori_magnitude_statistics[i]
+            if layer_sparsity==1:
+                bit.append(args.qbw_upper[i])
+            else:
+                bit.append(args.qbw_upper[i] - math.ceil(args.penalty_factor/layer_sparsity))
 
         # handle directory
         if not os.path.exists('./log_{}'.format(args.prune_away)):
@@ -341,26 +334,26 @@ class PICPQ:
         print('Before Pruning- Accuracy: {:.3f}, Cost: {:.3f}M'.format(test_acc[0], b4prune_flops/1e6))
         print('After Pruning- Accuracy: {:.3f}, Cost: {:.3f}M'.format(test_acc[-1], cur_flops/1e6))
         
-        epoch_qt = 400
+        # epoch_qt = 400
 
-        model_qt1 = qresnet_56_A(num_classes = 10, filters_left=sparse_channel, bit=bit).cuda()
-        model_qt1.load_state_dict(torch.load('./ckpt_{}/'.format(args.prune_away) + '{}_best.t7'.format(args.savename)))
-        model_qt1.to(device)
-        optimizer = optim.SGD(model_qt1.parameters(), lr=args.lr, momentum=0.9, weight_decay=args.weight_decay, nesterov=True)
-        scheduler = optim.lr_scheduler.MultiStepLR(optimizer, [int(epoch_qt*0.3), int(epoch_qt*0.6), int(epoch_qt*0.8)], gamma=0.2)
-        train(model_qt1, train_loader, test_loader, optimizer, epoch_qt, args.arch, scheduler=scheduler,  train_model_Running=False, quant=True, name=args.savename, ratio = args.prune_away, device=self.device)
+        # model_qt1 = qresnet_56_A(num_classes = 10, filters_left=sparse_channel, bit=bit).cuda()
+        # model_qt1.load_state_dict(torch.load('./ckpt_{}/'.format(args.prune_away) + '{}_best.t7'.format(args.savename)))
+        # model_qt1.to(device)
+        # optimizer = optim.SGD(model_qt1.parameters(), lr=args.lr, momentum=0.9, weight_decay=args.weight_decay, nesterov=True)
+        # scheduler = optim.lr_scheduler.MultiStepLR(optimizer, [int(epoch_qt*0.3), int(epoch_qt*0.6), int(epoch_qt*0.8)], gamma=0.2)
+        # train(model_qt1, train_loader, test_loader, optimizer, epoch_qt, args.arch, scheduler=scheduler,  train_model_Running=False, quant=True, name=args.savename, ratio = args.prune_away, device=self.device)
         
 
-        model_qt2 = qresnet_56_A_W(num_classes = 10, filters_left=sparse_channel, bit=bit).cuda()
-        model_qt2.load_state_dict(torch.load('./ckpt_{}/'.format(args.prune_away) + '{}_quant_best.t7'.format(args.savename)))
-        model_qt2.to(device)
-        optimizer = optim.SGD(model_qt2.parameters(), lr=args.lr, momentum=0.9, weight_decay=args.weight_decay, nesterov=True)
-        scheduler = optim.lr_scheduler.MultiStepLR(optimizer, [int(epoch_qt*0.3), int(epoch_qt*0.6), int(epoch_qt*0.8)], gamma=0.2)
-        train(model_qt2, train_loader, test_loader, optimizer, epoch_qt, args.arch, scheduler=scheduler,  train_model_Running=False, quant=True, name=args.savename, ratio = args.prune_away, device=self.device)
+        # model_qt2 = qresnet_56_A_W(num_classes = 10, filters_left=sparse_channel, bit=bit).cuda()
+        # model_qt2.load_state_dict(torch.load('./ckpt_{}/'.format(args.prune_away) + '{}_quant_best.t7'.format(args.savename)))
+        # model_qt2.to(device)
+        # optimizer = optim.SGD(model_qt2.parameters(), lr=args.lr, momentum=0.9, weight_decay=args.weight_decay, nesterov=True)
+        # scheduler = optim.lr_scheduler.MultiStepLR(optimizer, [int(epoch_qt*0.3), int(epoch_qt*0.6), int(epoch_qt*0.8)], gamma=0.2)
+        # train(model_qt2, train_loader, test_loader, optimizer, epoch_qt, args.arch, scheduler=scheduler,  train_model_Running=False, quant=True, name=args.savename, ratio = args.prune_away, device=self.device)
 
-        bops_counter = eval('BOPsCounterResNet')(self.model, self.rank_type, num_cls=10, rankPath=args.rankPath, device=self.device)
-        _, cur_bops = bops_counter.forward(torch.zeros((1,3,32, 32), device=self.device), sparse_channel, bit, bit)
-        print('BOPs: {:.3f}G'.format(cur_bops/1e9))
+        # bops_counter = eval('BOPsCounterResNet')(self.model, self.rank_type, num_cls=10, rankPath=args.rankPath, device=self.device)
+        # _, cur_bops = bops_counter.forward(torch.zeros((1,3,32, 32), device=self.device), sparse_channel, bit, bit)
+        # print('BOPs: {:.3f}G'.format(cur_bops/1e9))
 
 if __name__ == "__main__":
     startTime = time.time()
@@ -381,7 +374,7 @@ if __name__ == "__main__":
     base_acc = test(basemodel, test_loader, device=device)
     print('Baseline Acc: {:.2f}'.format(base_acc))
 
-    filter_pruner = eval('FilterPrunerResNet')(basemodel, 'l2_weight', num_cls=10, rankPath=args.rankPath, device=device)
+    filter_pruner = eval('FilterPrunerResNet')(basemodel, 'Rank', num_cls=10, rankPath=args.rankPath, device=device)
     filter_pruner.forward(torch.zeros((1,3,32, 32), device=device))
     
 

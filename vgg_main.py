@@ -17,6 +17,7 @@ from pruner.fp_resnet import FilterPrunerResNet
 from model.vgg_cifar import *
 from pruner.fp_vgg import FilterPrunerVGG
 from count_bops import BOPsCounterResNet, BOPsCounterVGG
+from assign_bit import BitwidthAllocatorVGG
 
 import os
 import sys
@@ -45,26 +46,26 @@ from model.vgg_cifar_qt2 import *
 
 
 
-os.environ['CUDA_VISIBLE_DEVICES']='0'
+os.environ['CUDA_VISIBLE_DEVICES']='2'
 # Hyper-Parameters
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--arch', type=str, default='vgg_16_bn', choices=('resnet_56','vgg_16_bn'), help='The architecture to prune and the resulting model and logs will use this') 
-    parser.add_argument('--resume', type=str, default='./ckpt/vgg_16_bn_CIFAR10.t7',help='load the model from the specified checkpoint')
-    parser.add_argument("--datapath", type=str, default='./data', help='Path toward the dataset that is used for this experiment')
+    parser.add_argument('--resume', type=str, default='./model/ckpt/vgg_16_bn_CIFAR10_93.75.t7',help='load the model from the specified checkpoint')
+    parser.add_argument("--datapath", type=str, default='/data/cyk/dataset/', help='Path toward the dataset that is used for this experiment')
     parser.add_argument("--dataset", type=str, default='torchvision.datasets.CIFAR10', help='The class name of the dataset that is used, please find available classes under the dataset folder')
     parser.add_argument("--pruner", type=str, default='FilterPrunerVGG',choices=('FilterPrunerResNet','FilterPrunerVGG'),help='Different network require differnt pruner implementation')
     parser.add_argument("--Bops_counter", type=str, default='BOPsCounterVGG',choices=('BOPsCounterResNet','BOPsCounterVGG'),help='Different network require differnt Bops counter implementation')
     parser.add_argument("--rankPath", type=str, default='./rank_conv/CIFAR10/vgg_16_bn', help='The path of ranks of convolution layers')
     parser.add_argument("--rank_type", type=str, default='Rank',choices=('l1_bn','l2_bn','l1_weight','l2_weight', 'Rank'), help='The ranking criteria for filter pruning')
-    parser.add_argument("--lub", type=str, default='./log_66/vgg_16_bn_ea_min.data', help='The affine transformations')
+    parser.add_argument("--lub", type=str, default='./log_65.3/vgg_16_bn_CIFAR10_ea_min.data', help='The affine transformations')
     parser.add_argument("--savename", type=str, default='vgg_16_bn_CIFAR10')
-    parser.add_argument("--ori_channel", type=str, default='[64]*2 + [128]*2 + [256]*3 + [512]*6', help='The original_channel of different network')
+    # parser.add_argument("--ori_channel", type=str, default='[64]*2 + [128]*2 + [256]*3 + [512]*6', help='The original_channel of different network')
     parser.add_argument("--global_random_rank", action='store_true', default=False, help='When this is specified, none of the rank_type matters, it will randomly prune the filters')  
     parser.add_argument("--long_ft", type=int, default=160, help='It specifies how many epochs to fine-tune the network once the pruning is done')
-    parser.add_argument("--prune_away",type=float, default=65, help='How many percentage of constraints should be pruned away. E.g., 50 means 50% of FLOPs will be pruned away')
-    parser.add_argument("--penalty_factor",type=float, default=6, help=' a constant about quantization bid-width that can be adjusted according to the need')
-    parser.add_argument("--qbw_upper",type=str, default='[32] + [8]*3 + [6]*3 + [4]*6', help='The upper bound of quantization bid-width for different network')
+    parser.add_argument("--prune_away",type=float, default=65.3, help='How many percentage of constraints should be pruned away. E.g., 50 means 50% of FLOPs will be pruned away')
+    parser.add_argument("--penalty_factor",type=float, default=1/6, help=' a constant about quantization bid-width that can be adjusted according to the need')
+    parser.add_argument("--qbw_upper",type=int, default=[32] + [8]*3 + [6]*3 + [4]*6, help='The upper bound of quantization bid-width for different network')
     parser.add_argument("--safeguard", type=float, default=0.1,help='A floating point number that represent at least how many percentage of the original number of channel should be preserved. E.g., 0.10 means no matter what ranking, each layer should have at least 10% of the number of original channels.')
     parser.add_argument("--batch_size", type=int, default=128, choices=(16, 32, 64, 128), help='Batch size for training.')
     parser.add_argument("--tau_hat", type=int, default=200, help='The number of updates before evaluating for fitness (used in EA).   e.g. tau_hat = 200')
@@ -265,34 +266,7 @@ class PICPQ:
 
         # self.pruner.pruning_with_transformations(self.pruner.filter_ranks, perturbation, target)
         sparse_channel = self.pruner.pruning_with_transformations(self.pruner.filter_ranks, perturbation, target)
-        bit = []
-        bit_conv = []
-        original_channel = args.ori_channel
-        for i in range(len(sparse_channel)):
-            s = sparse_channel[i] / original_channel[i]
-
-            if s == 1:
-                s = 0
-            else:
-                s = 1 / s
-
-            if args.arch == 'resnet_56':
-                upper = args.qbw_upper
-                wbit = upper[i] - math.ceil(s/args.penalty_factor)
-                bit.append(wbit)
-
-            elif args.arch == 'vgg_16_bn':
-                upper = args.qbw_upper
-                wbit = upper[i] - math.ceil(s/args.penalty_factor)
-                bit.append(wbit)
-                bit_conv.append(wbit)
-                if i == 1 or i == 3 or i == 6 or i == 9:
-                    bit.append('M')
-                elif  i == 12:
-                    bit.append(32)
-        print(bit)
-        print(bit_conv)
-
+       
         self.pruner.reset()
         self.model.eval()
 
@@ -311,11 +285,37 @@ class PICPQ:
         print('Saving untrained model...')
         
         # save untrained model
-        torch.save(self.pruner.model, os.path.join('ckpt_{}'.format(args.prune_away), '{}_init.t7'.format(args.savename)))  
+        torch.save(self.pruner.model, os.path.join('ckpt_{}/'.format(args.prune_away), '{}_init.t7'.format(args.savename)))  
 
         acc = test(self.model, self.test_loader, device=self.device)
         # before fune-tuning
         b4ft_test_acc.append(acc)
+
+        ori_model = vgg_16_bn()
+        ori_model.load_state_dict(torch.load(args.resume))
+        ori_model.to(device)
+        slim_model = torch.load('./ckpt_{}/'.format(args.prune_away) + '{}_init.t7'.format(args.savename)).to(device)
+        ori_statistics = BitwidthAllocatorVGG(ori_model)
+        slim_statistics = BitwidthAllocatorVGG(slim_model)
+        _, ori_magnitude_statistics = ori_statistics.forward(torch.zeros((1,3,32, 32), device = device))
+        _, slim_magnitude_statistics = slim_statistics.forward(torch.zeros((1,3,32, 32), device = device))
+
+        bit = []
+        bit_conv = []
+        for i in range(len(sparse_channel)):
+            layer_sparsity = slim_magnitude_statistics[i]/ori_magnitude_statistics[i]
+            if layer_sparsity==1:
+                bit_conv.append(args.qbw_upper[i])
+                bit.append(bit_conv)
+            else:
+                bit_conv.append(args.qbw_upper[i] - math.ceil(args.penalty_factor/layer_sparsity))
+                bit.append(bit_conv)
+            if i == 1 or i == 3 or i == 6 or i == 9:
+                bit.append('M')
+            elif  i == 12:
+                bit.append(32)
+        print(bit)
+        
 
         # handle directory
         if not os.path.exists('./log_{}'.format(args.prune_away)):
@@ -343,6 +343,7 @@ class PICPQ:
         log = np.stack([np.array(b4ft_test_acc), np.array(test_acc), np.array(density), np.array(flops)], axis=1)
         np.savetxt(os.path.join('./log_{}'.format(args.prune_away), '{}_test_acc.txt'.format(args.savename)), log)
 
+        
         epoch_qt = 400
         
         model_qt1 = qvgg_16_bn_A(filters_left=sparse_channel, bit=bit).cuda()
